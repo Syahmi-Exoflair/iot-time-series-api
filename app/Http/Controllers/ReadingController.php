@@ -91,4 +91,24 @@ class ReadingController extends Controller
 
         return response()->json($reading);
     }
+
+    public function calculatePower(Request $request)
+    {
+        $parameter_one = $request->input('parameter_current_a');
+        $parameter_two = $request->input('parameter_current_b');
+        $parameter_three = $request->input('parameter_current_c');
+        
+        $current_a = Reading::where('parameter_id', (int) $parameter_one)->latest('recorded_time')->first();
+
+        $current_b = Reading::where('parameter_id', (int) $parameter_two)->latest('recorded_time')->first();
+
+        $current_c = Reading::where('parameter_id', (int) $parameter_three)->latest('recorded_time')->first();
+
+        $voltage = 240; // Assuming a fixed voltage value
+        $average_current = ($current_a->reading + $current_b->reading + $current_c->reading) / 3;
+        
+        $power = ($voltage * $average_current)/1000; // in kW
+        return $power;
+        return response()->json(['power_kw' => $power]);
+    }
 }

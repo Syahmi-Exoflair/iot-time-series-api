@@ -58,3 +58,4 @@ Route::post('/tokens/revoke', function (Request $request) {
 Route::get('/readings', [App\Http\Controllers\ReadingController::class, 'index'])->middleware('auth:sanctum');
 Route::get('/readings/list', [App\Http\Controllers\ReadingController::class, 'list'])->middleware('auth:sanctum');
 Route::get('/readings/show', [App\Http\Controllers\ReadingController::class, 'show'])->middleware('auth:sanctum');
+Route::get('/readings/calculate-power', [App\Http\Controllers\ReadingController::class, 'calculatePower'])->middleware('auth:sanctum');
