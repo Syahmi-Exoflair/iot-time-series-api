@@ -97,18 +97,24 @@ class ReadingController extends Controller
         $parameter_one = $request->input('parameter_current_a');
         $parameter_two = $request->input('parameter_current_b');
         $parameter_three = $request->input('parameter_current_c');
-        
+        $voltage = $request->input('voltage', 240); // Default voltage
+        $phase = $request->input('phase', 'single'); // single or three-phase
+        $power_factor = $request->input('power_factor', 0.85); // Default power factor
+
         $current_a = Reading::where('parameter_id', (int) $parameter_one)->latest('recorded_time')->first();
 
         $current_b = Reading::where('parameter_id', (int) $parameter_two)->latest('recorded_time')->first();
 
         $current_c = Reading::where('parameter_id', (int) $parameter_three)->latest('recorded_time')->first();
 
-        $voltage = 240; // Assuming a fixed voltage value
         $average_current = ($current_a->reading + $current_b->reading + $current_c->reading) / 3;
-        
-        $power = ($voltage * $average_current)/1000; // in kW
+
+        if ($phase === 'three') {
+            $power = ($average_current * $voltage * 1.732 * $power_factor) / 1000; // kW
+        } else {
+            $power = ($average_current * $voltage) / 1000; // kW
+        }
         return $power;
-        return response()->json(['power_kw' => $power]);
+        // return response()->json(['power_kw' => $power]);
     }
 }
