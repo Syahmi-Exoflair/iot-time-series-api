@@ -99,8 +99,8 @@ class ReadingController extends Controller
         if (!empty($parameter_three)) {
             $current_c = Reading::where('parameter_id', (int) $parameter_three)->latest('recorded_time')->first();
         }
-
-        if (empty($current_b || $current_c)) {
+        
+        if (empty($current_b) || empty($current_c)) {
             $average_current = $current_a->reading;
         } else {
             $average_current = ($current_a->reading + $current_b->reading + $current_c->reading) / 3;
