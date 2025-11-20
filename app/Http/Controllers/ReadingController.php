@@ -114,4 +114,27 @@ class ReadingController extends Controller
 
         return $power;
     }
+
+    public function getMonthlyReadingsPeopleCounter(Request $request)
+    {
+        $parameter_id = $request->input('parameter_id');
+        $device_id = $request->input('device_id');
+        $year = $request->input('year', date('Y'));
+        $month = $request->input('month', date('m'));
+
+        $startDate = $year . '-' . str_pad($month, 2, '0', STR_PAD_LEFT) . '-01';
+        $endDate = date('Y-m-t', strtotime($startDate));
+
+        $readings = Reading::where('parameter_id', (int) $parameter_id)
+            ->where('device_id', (int) $device_id)
+            ->whereBetween('recorded_time', [$startDate, $endDate . ' 23:59:59'])
+            ->orderBy('recorded_time', 'asc')
+            ->latest('recorded_time')
+            ->first();
+
+        return response()->json([
+            'data' => $readings,
+            'count' => $readings->count(),
+        ]);
+    }
 }

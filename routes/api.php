@@ -59,3 +59,4 @@ Route::get('/readings', [App\Http\Controllers\ReadingController::class, 'index']
 Route::get('/readings/list', [App\Http\Controllers\ReadingController::class, 'list'])->middleware('auth:sanctum');
 Route::get('/readings/show', [App\Http\Controllers\ReadingController::class, 'show'])->middleware('auth:sanctum');
 Route::get('/readings/calculate-power', [App\Http\Controllers\ReadingController::class, 'calculatePower'])->middleware('auth:sanctum');
+Route::get('/readings/monthly-people-counter', [App\Http\Controllers\ReadingController::class, 'getMonthlyReadingsPeopleCounter'])->middleware('auth:sanctum');
