@@ -128,61 +128,57 @@ class ReadingController extends Controller
 
         $startDate = $year . '-' . str_pad($month, 2, '0', STR_PAD_LEFT) . '-01';
         $endDate = date('Y-m-t', strtotime($startDate));
-
-        // Get last reading of the month for current A
-        $current_a_reading = null;
-        if (!empty($parameter_current_a)) {
-            $current_a_reading = Reading::where('parameter_id', (int) $parameter_current_a)
-                ->whereBetween('recorded_time', [$startDate . ' 00:00:00', $endDate . ' 23:59:59'])
-                ->orderBy('recorded_time', 'desc')
-                ->first();
-        }
-
-        // Get last reading of the month for current B
-        $current_b_reading = null;
-        if (!empty($parameter_current_b)) {
-            $current_b_reading = Reading::where('parameter_id', (int) $parameter_current_b)
-                ->whereBetween('recorded_time', [$startDate . ' 00:00:00', $endDate . ' 23:59:59'])
-                ->orderBy('recorded_time', 'desc')
-                ->first();
-        }
-
-        // Get last reading of the month for current C
-        $current_c_reading = null;
-        if (!empty($parameter_current_c)) {
-            $current_c_reading = Reading::where('parameter_id', (int) $parameter_current_c)
-                ->whereBetween('recorded_time', [$startDate . ' 00:00:00', $endDate . ' 23:59:59'])
-                ->orderBy('recorded_time', 'desc')
-                ->first();
-        }
-
-        // Get previous month readings for comparison
         $previousMonthEnd = date('Y-m-d', strtotime($startDate . ' -1 day'));
         $previousMonthStart = date('Y-m-01', strtotime($previousMonthEnd));
 
-        $previous_a_reading = null;
-        if (!empty($parameter_current_a)) {
-            $previous_a_reading = Reading::where('parameter_id', (int) $parameter_current_a)
-                ->whereBetween('recorded_time', [$previousMonthStart . ' 00:00:00', $previousMonthEnd . ' 23:59:59'])
-                ->orderBy('recorded_time', 'desc')
-                ->first();
+        // Collect all parameter IDs that are provided
+        $parameterIds = [];
+        if (!empty($parameter_current_a)) $parameterIds[] = (int) $parameter_current_a;
+        if (!empty($parameter_current_b)) $parameterIds[] = (int) $parameter_current_b;
+        if (!empty($parameter_current_c)) $parameterIds[] = (int) $parameter_current_c;
+
+        // Early return if no parameters provided
+        if (empty($parameterIds)) {
+            return response()->json([
+                'error' => 'At least one current parameter is required'
+            ], 400);
         }
 
-        $previous_b_reading = null;
-        if (!empty($parameter_current_b)) {
-            $previous_b_reading = Reading::where('parameter_id', (int) $parameter_current_b)
-                ->whereBetween('recorded_time', [$previousMonthStart . ' 00:00:00', $previousMonthEnd . ' 23:59:59'])
-                ->orderBy('recorded_time', 'desc')
-                ->first();
+        // Fetch ALL readings for all parameters in ONE query
+        $allReadings = Reading::whereIn('parameter_id', $parameterIds)
+            ->where('recorded_time', '>=', $previousMonthStart . ' 00:00:00')
+            ->where('recorded_time', '<=', $endDate . ' 23:59:59')
+            ->select('parameter_id', 'reading', 'recorded_time')
+            ->orderBy('recorded_time', 'desc')
+            ->get();
+
+        // Group readings by parameter_id and period
+        $readingsByParameter = [];
+        foreach ($allReadings as $reading) {
+            $parameterId = $reading->parameter_id;
+            $recordDate = substr($reading->recorded_time, 0, 10);
+            
+            // Determine if this is current month or previous month
+            if ($recordDate >= $startDate && $recordDate <= $endDate) {
+                if (!isset($readingsByParameter[$parameterId]['current'])) {
+                    $readingsByParameter[$parameterId]['current'] = $reading;
+                }
+            } elseif ($recordDate >= $previousMonthStart && $recordDate <= $previousMonthEnd) {
+                if (!isset($readingsByParameter[$parameterId]['previous'])) {
+                    $readingsByParameter[$parameterId]['previous'] = $reading;
+                }
+            }
         }
 
-        $previous_c_reading = null;
-        if (!empty($parameter_current_c)) {
-            $previous_c_reading = Reading::where('parameter_id', (int) $parameter_current_c)
-                ->whereBetween('recorded_time', [$previousMonthStart . ' 00:00:00', $previousMonthEnd . ' 23:59:59'])
-                ->orderBy('recorded_time', 'desc')
-                ->first();
-        }
+        // Extract readings for each parameter
+        $current_a_reading = $readingsByParameter[$parameter_current_a]['current'] ?? null;
+        $previous_a_reading = $readingsByParameter[$parameter_current_a]['previous'] ?? null;
+        
+        $current_b_reading = !empty($parameter_current_b) ? ($readingsByParameter[$parameter_current_b]['current'] ?? null) : null;
+        $previous_b_reading = !empty($parameter_current_b) ? ($readingsByParameter[$parameter_current_b]['previous'] ?? null) : null;
+        
+        $current_c_reading = !empty($parameter_current_c) ? ($readingsByParameter[$parameter_current_c]['current'] ?? null) : null;
+        $previous_c_reading = !empty($parameter_current_c) ? ($readingsByParameter[$parameter_current_c]['previous'] ?? null) : null;
 
         // Calculate difference for current A
         $current_a_diff = 0;
@@ -227,7 +223,11 @@ class ReadingController extends Controller
 
         // Calculate power usage
         if ($phase === 'three') {
-            $power_usage = ($average_current * $voltage * 1.732 * $power_factor) / 1000;
+            // $power_usage = ($average_current * $voltage * 1.732 * $power_factor) / 1000;
+            $current_a_power = ($current_a_diff * $voltage * 1.732 * $power_factor) / 1000;
+            $current_b_power = ($current_b_diff * $voltage * 1.732 * $power_factor) / 1000;
+            $current_c_power = ($current_c_diff * $voltage * 1.732 * $power_factor) / 1000;
+            $power_usage = $current_a_power + $current_b_power + $current_c_power;
         } else {
             $power_usage = ($average_current * $voltage * $power_factor) / 1000;
         }
@@ -254,44 +254,49 @@ class ReadingController extends Controller
         // If day is provided, filter by specific day
         if ($day) {
             $startDate = $year . '-' . str_pad($month, 2, '0', STR_PAD_LEFT) . '-' . str_pad($day, 2, '0', STR_PAD_LEFT);
-            $endDate = $startDate;
-
-            // Get readings for the requested day
-            $currentReading = Reading::where('parameter_id', (int) $parameter_id)
-                ->where('device_id', (int) $device_id)
-                ->whereBetween('recorded_time', [$startDate . ' 00:00:00', $endDate . ' 23:59:59'])
-                ->orderBy('recorded_time', 'desc')
-                ->first();
-
-            // Get last reading from previous day
             $previousDate = date('Y-m-d', strtotime($startDate . ' -1 day'));
-            $previousReading = Reading::where('parameter_id', (int) $parameter_id)
+
+            // Fetch both current and previous day readings in one query
+            $readings = Reading::where('parameter_id', (int) $parameter_id)
                 ->where('device_id', (int) $device_id)
-                ->whereBetween('recorded_time', [$previousDate . ' 00:00:00', $previousDate . ' 23:59:59'])
+                ->where('recorded_time', '>=', $previousDate . ' 00:00:00')
+                ->where('recorded_time', '<=', $startDate . ' 23:59:59')
+                ->select('reading', 'recorded_time')
                 ->orderBy('recorded_time', 'desc')
-                ->first();
+                ->get();
+
+            $currentReading = $readings->first(function($reading) use ($startDate) {
+                return strpos($reading->recorded_time, $startDate) === 0;
+            });
+
+            $previousReading = $readings->first(function($reading) use ($previousDate) {
+                return strpos($reading->recorded_time, $previousDate) === 0;
+            });
         } else {
             // Filter by month
             $startDate = $year . '-' . str_pad($month, 2, '0', STR_PAD_LEFT) . '-01';
             $endDate = date('Y-m-t', strtotime($startDate));
-
-            // Get readings for the requested month
-            $currentReading = Reading::where('parameter_id', (int) $parameter_id)
-                ->where('device_id', (int) $device_id)
-                ->whereBetween('recorded_time', [$startDate, $endDate . ' 23:59:59'])
-                ->orderBy('recorded_time', 'desc')
-                ->first();
-
-            // Calculate previous month dates
             $previousMonthEnd = date('Y-m-d', strtotime($startDate . ' -1 day'));
             $previousMonthStart = date('Y-m-01', strtotime($previousMonthEnd));
 
-            // Get last reading from previous month
-            $previousReading = Reading::where('parameter_id', (int) $parameter_id)
+            // Fetch both current and previous month readings in one query
+            $readings = Reading::where('parameter_id', (int) $parameter_id)
                 ->where('device_id', (int) $device_id)
-                ->whereBetween('recorded_time', [$previousMonthStart, $previousMonthEnd . ' 23:59:59'])
+                ->where('recorded_time', '>=', $previousMonthStart . ' 00:00:00')
+                ->where('recorded_time', '<=', $endDate . ' 23:59:59')
+                ->select('reading', 'recorded_time')
                 ->orderBy('recorded_time', 'desc')
-                ->first();
+                ->get();
+
+            $currentReading = $readings->first(function($reading) use ($startDate, $endDate) {
+                $recordDate = substr($reading->recorded_time, 0, 10);
+                return $recordDate >= $startDate && $recordDate <= $endDate;
+            });
+
+            $previousReading = $readings->first(function($reading) use ($previousMonthStart, $previousMonthEnd) {
+                $recordDate = substr($reading->recorded_time, 0, 10);
+                return $recordDate >= $previousMonthStart && $recordDate <= $previousMonthEnd;
+            });
         }
 
         $difference = 0;
@@ -320,6 +325,7 @@ class ReadingController extends Controller
         if (!$param_request) {
             $latestReading = Reading::where('parameter_id', (int) $parameter_id)
                 ->where('device_id', (int) $device_id)
+                ->select('reading', 'recorded_time', 'parameter_id', 'device_id')
                 ->orderBy('recorded_time', 'desc')
                 ->first();
 
@@ -328,39 +334,48 @@ class ReadingController extends Controller
 
         // Calculate daily differences for the entire month
         $startDate = $year . '-' . str_pad($month, 2, '0', STR_PAD_LEFT) . '-01';
-        $daysInMonth = date('t', strtotime($startDate));
-        
+        $endDate = date('Y-m-t', strtotime($startDate));
+        $previousMonthEnd = date('Y-m-d', strtotime($startDate . ' -1 day'));
+        $previousMonthStart = date('Y-m-01', strtotime($previousMonthEnd));
+
+        // Fetch ALL readings for current and previous month in ONE query
+        $allReadings = Reading::where('parameter_id', (int) $parameter_id)
+            ->where('device_id', (int) $device_id)
+            ->where('recorded_time', '>=', $previousMonthStart . ' 00:00:00')
+            ->where('recorded_time', '<=', $endDate . ' 23:59:59')
+            ->select('reading', 'recorded_time')
+            ->orderBy('recorded_time', 'desc')
+            ->get();
+
+        if ($allReadings->isEmpty()) {
+            return response()->json(['message' => 'No readings found for the specified month'], 404);
+        }
+
+        // Group readings by date and get last reading per day
+        $readingsByDate = [];
+        foreach ($allReadings as $reading) {
+            $date = substr($reading->recorded_time, 0, 10);
+            if (!isset($readingsByDate[$date])) {
+                $readingsByDate[$date] = $reading;
+            }
+        }
+
+        // Calculate daily differences
         $dailyDifferences = [];
+        $daysInMonth = date('t', strtotime($startDate));
 
         for ($day = 1; $day <= $daysInMonth; $day++) {
             $currentDate = $year . '-' . str_pad($month, 2, '0', STR_PAD_LEFT) . '-' . str_pad($day, 2, '0', STR_PAD_LEFT);
-            
-            // Get last reading for current day
-            $currentReading = Reading::where('parameter_id', (int) $parameter_id)
-                ->where('device_id', (int) $device_id)
-                ->whereBetween('recorded_time', [$currentDate . ' 00:00:00', $currentDate . ' 23:59:59'])
-                ->orderBy('recorded_time', 'desc')
-                ->first();
-
-            // Skip if no reading for current day
-            if (!$currentReading) {
-                continue;
-            }
-
-            // Get last reading from previous day
             $previousDate = date('Y-m-d', strtotime($currentDate . ' -1 day'));
-            $previousReading = Reading::where('parameter_id', (int) $parameter_id)
-                ->where('device_id', (int) $device_id)
-                ->whereBetween('recorded_time', [$previousDate . ' 00:00:00', $previousDate . ' 23:59:59'])
-                ->orderBy('recorded_time', 'desc')
-                ->first();
 
-            // Skip if no previous reading (can't calculate valid difference)
-            if (!$previousReading) {
+            // Check if readings exist for both dates
+            if (!isset($readingsByDate[$currentDate]) || !isset($readingsByDate[$previousDate])) {
                 continue;
             }
 
-            // Calculate difference
+            $currentReading = $readingsByDate[$currentDate];
+            $previousReading = $readingsByDate[$previousDate];
+
             $difference = $currentReading->reading - $previousReading->reading;
 
             $dailyDifferences[] = [
@@ -376,7 +391,7 @@ class ReadingController extends Controller
 
         // Find max or min difference
         if (empty($dailyDifferences)) {
-            return response()->json(['message' => 'No readings found for the specified month'], 404);
+            return response()->json(['message' => 'No valid daily differences found for the specified month'], 404);
         }
 
         if ($param_request === 'max') {
