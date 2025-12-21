@@ -126,11 +126,6 @@ class ReadingController extends Controller
         $year = $request->input('year', date('Y'));
         $month = $request->input('month', date('m'));
 
-        $startDate = $year . '-' . str_pad($month, 2, '0', STR_PAD_LEFT) . '-01';
-        $endDate = date('Y-m-t', strtotime($startDate));
-        $previousMonthEnd = date('Y-m-d', strtotime($startDate . ' -1 day'));
-        $previousMonthStart = date('Y-m-01', strtotime($previousMonthEnd));
-
         // Collect all parameter IDs that are provided
         $parameterIds = [];
         if (!empty($parameter_current_a)) $parameterIds[] = (int) $parameter_current_a;
@@ -144,103 +139,112 @@ class ReadingController extends Controller
             ], 400);
         }
 
-        // Fetch ALL readings for all parameters in ONE query
-        $allReadings = Reading::whereIn('parameter_id', $parameterIds)
-            ->where('recorded_time', '>=', $previousMonthStart . ' 00:00:00')
-            ->where('recorded_time', '<=', $endDate . ' 23:59:59')
-            ->select('parameter_id', 'reading', 'recorded_time')
-            ->orderBy('recorded_time', 'desc')
-            ->get();
-
-        // Group readings by parameter_id and period
-        $readingsByParameter = [];
-        foreach ($allReadings as $reading) {
-            $parameterId = $reading->parameter_id;
-            $recordDate = substr($reading->recorded_time, 0, 10);
-            
-            // Determine if this is current month or previous month
-            if ($recordDate >= $startDate && $recordDate <= $endDate) {
-                if (!isset($readingsByParameter[$parameterId]['current'])) {
-                    $readingsByParameter[$parameterId]['current'] = $reading;
-                }
-            } elseif ($recordDate >= $previousMonthStart && $recordDate <= $previousMonthEnd) {
-                if (!isset($readingsByParameter[$parameterId]['previous'])) {
-                    $readingsByParameter[$parameterId]['previous'] = $reading;
-                }
-            }
-        }
-
-        // Extract readings for each parameter
-        $current_a_reading = $readingsByParameter[$parameter_current_a]['current'] ?? null;
-        $previous_a_reading = $readingsByParameter[$parameter_current_a]['previous'] ?? null;
+        // Generate cache key for this request
+        $cacheKey = 'power_usage_' . implode('_', $parameterIds) . '_' . $year . '_' . $month . '_' . $phase;
         
-        $current_b_reading = !empty($parameter_current_b) ? ($readingsByParameter[$parameter_current_b]['current'] ?? null) : null;
-        $previous_b_reading = !empty($parameter_current_b) ? ($readingsByParameter[$parameter_current_b]['previous'] ?? null) : null;
-        
-        $current_c_reading = !empty($parameter_current_c) ? ($readingsByParameter[$parameter_current_c]['current'] ?? null) : null;
-        $previous_c_reading = !empty($parameter_current_c) ? ($readingsByParameter[$parameter_current_c]['previous'] ?? null) : null;
+        // Check cache first (5 minutes TTL)
+        $cachedResult = \Cache::remember($cacheKey, 300, function () use ($parameterIds, $year, $month, $parameter_current_a, $parameter_current_b, $parameter_current_c, $voltage, $phase, $power_factor) {
+            $startDate = $year . '-' . str_pad($month, 2, '0', STR_PAD_LEFT) . '-01';
+            $endDate = date('Y-m-t', strtotime($startDate));
+            $previousMonthEnd = date('Y-m-d', strtotime($startDate . ' -1 day'));
+            $previousMonthStart = date('Y-m-01', strtotime($previousMonthEnd));
 
-        // Calculate difference for current A
-        $current_a_diff = 0;
-        if ($current_a_reading && $previous_a_reading) {
-            $current_a_diff = $current_a_reading->reading - $previous_a_reading->reading;
-        } elseif ($current_a_reading) {
-            $current_a_diff = $current_a_reading->reading;
-        }
+            // Quick check: if current month has no data, return immediately
+            $hasCurrentData = Reading::whereIn('parameter_id', $parameterIds)
+                ->where('recorded_time', '>=', $startDate . ' 00:00:00')
+                ->where('recorded_time', '<=', $endDate . ' 23:59:59')
+                ->exists();
 
-        // Calculate difference for current B
-        $current_b_diff = 0;
-        if ($current_b_reading && $previous_b_reading) {
-            $current_b_diff = $current_b_reading->reading - $previous_b_reading->reading;
-        } elseif ($current_b_reading) {
-            $current_b_diff = $current_b_reading->reading;
-        }
-
-        // Calculate difference for current C
-        $current_c_diff = 0;
-        if ($current_c_reading && $previous_c_reading) {
-            $current_c_diff = $current_c_reading->reading - $previous_c_reading->reading;
-        } elseif ($current_c_reading) {
-            $current_c_diff = $current_c_reading->reading;
-        }
-
-        // Calculate average current usage
-        if (empty($current_b_diff) && empty($current_c_diff)) {
-            $average_current = $current_a_diff;
-        } else {
-            $count = 1;
-            $total = $current_a_diff;
-            if (!empty($current_b_diff)) {
-                $total += $current_b_diff;
-                $count++;
+            if (!$hasCurrentData) {
+                return 'empty';
             }
-            if (!empty($current_c_diff)) {
-                $total += $current_c_diff;
-                $count++;
+
+            // Optimize: Only get first and last reading per parameter per period
+            $currentMonthReadings = Reading::whereIn('parameter_id', $parameterIds)
+                ->where('recorded_time', '>=', $startDate . ' 00:00:00')
+                ->where('recorded_time', '<=', $endDate . ' 23:59:59')
+                ->select('parameter_id', 'reading', 'recorded_time')
+                ->orderBy('recorded_time', 'desc')
+                ->limit(count($parameterIds) * 2)
+                ->get();
+
+            $previousMonthReadings = Reading::whereIn('parameter_id', $parameterIds)
+                ->where('recorded_time', '>=', $previousMonthStart . ' 00:00:00')
+                ->where('recorded_time', '<=', $previousMonthEnd . ' 23:59:59')
+                ->select('parameter_id', 'reading', 'recorded_time')
+                ->orderBy('recorded_time', 'desc')
+                ->limit(count($parameterIds) * 2)
+                ->get();
+
+            // Group readings by parameter_id
+            $readingsByParameter = [];
+            foreach ($currentMonthReadings as $reading) {
+                if (!isset($readingsByParameter[$reading->parameter_id]['current'])) {
+                    $readingsByParameter[$reading->parameter_id]['current'] = $reading;
+                }
             }
-            $average_current = $total / $count;
+            foreach ($previousMonthReadings as $reading) {
+                if (!isset($readingsByParameter[$reading->parameter_id]['previous'])) {
+                    $readingsByParameter[$reading->parameter_id]['previous'] = $reading;
+                }
+            }
+
+            // Calculate differences for each phase
+            $diffs = [];
+            foreach ([$parameter_current_a, $parameter_current_b, $parameter_current_c] as $paramId) {
+                if (empty($paramId)) continue;
+                
+                $current = $readingsByParameter[$paramId]['current'] ?? null;
+                $previous = $readingsByParameter[$paramId]['previous'] ?? null;
+                
+                if ($current && $previous) {
+                    $diffs[] = $current->reading - $previous->reading;
+                } elseif ($current) {
+                    $diffs[] = $current->reading;
+                }
+            }
+
+            if (empty($diffs)) {
+                return null;
+            }
+
+            // Calculate average
+            $average_current = array_sum($diffs) / count($diffs);
+
+            // Calculate power usage
+            if ($phase === 'three') {
+                $power_usage = array_sum(array_map(function($diff) use ($voltage, $power_factor) {
+                    return ($diff * $voltage * 1.732 * $power_factor) / 1000;
+                }, $diffs));
+            } else {
+                $power_usage = ($average_current * $voltage * $power_factor) / 1000;
+            }
+
+            return [
+                'year' => (int) $year,
+                'month' => (int) $month,
+                'power_usage_kwh' => round($power_usage, 2),
+                'average_current' => round($average_current, 2),
+                'phase' => $phase,
+                'voltage' => $voltage,
+                'power_factor' => $power_factor,
+            ];
+        });
+
+        if ($cachedResult === 'empty' || $cachedResult === null) {
+            return response()->json([
+                'year' => (int) $year,
+                'month' => (int) $month,
+                'power_usage_kwh' => 0,
+                'average_current' => 0,
+                'phase' => $phase,
+                'voltage' => $voltage,
+                'power_factor' => $power_factor,
+                'message' => 'No readings found for the specified period'
+            ]);
         }
 
-        // Calculate power usage
-        if ($phase === 'three') {
-            // $power_usage = ($average_current * $voltage * 1.732 * $power_factor) / 1000;
-            $current_a_power = ($current_a_diff * $voltage * 1.732 * $power_factor) / 1000;
-            $current_b_power = ($current_b_diff * $voltage * 1.732 * $power_factor) / 1000;
-            $current_c_power = ($current_c_diff * $voltage * 1.732 * $power_factor) / 1000;
-            $power_usage = $current_a_power + $current_b_power + $current_c_power;
-        } else {
-            $power_usage = ($average_current * $voltage * $power_factor) / 1000;
-        }
-
-        return response()->json([
-            'year' => (int) $year,
-            'month' => (int) $month,
-            'power_usage_kwh' => round($power_usage, 2),
-            'average_current' => round($average_current, 2),
-            'phase' => $phase,
-            'voltage' => $voltage,
-            'power_factor' => $power_factor,
-        ]);
+        return response()->json($cachedResult);
     }
 
     public function getMonthlyReadingsPeopleCounter(Request $request)
@@ -263,6 +267,7 @@ class ReadingController extends Controller
                 ->where('recorded_time', '<=', $startDate . ' 23:59:59')
                 ->select('reading', 'recorded_time')
                 ->orderBy('recorded_time', 'desc')
+                ->limit(1000)
                 ->get();
 
             $currentReading = $readings->first(function($reading) use ($startDate) {
@@ -286,6 +291,7 @@ class ReadingController extends Controller
                 ->where('recorded_time', '<=', $endDate . ' 23:59:59')
                 ->select('reading', 'recorded_time')
                 ->orderBy('recorded_time', 'desc')
+                ->limit(2000)
                 ->get();
 
             $currentReading = $readings->first(function($reading) use ($startDate, $endDate) {
@@ -345,6 +351,7 @@ class ReadingController extends Controller
             ->where('recorded_time', '<=', $endDate . ' 23:59:59')
             ->select('reading', 'recorded_time')
             ->orderBy('recorded_time', 'desc')
+            ->limit(10000)
             ->get();
 
         if ($allReadings->isEmpty()) {
