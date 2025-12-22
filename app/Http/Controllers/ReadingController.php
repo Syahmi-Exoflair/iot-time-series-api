@@ -267,7 +267,6 @@ class ReadingController extends Controller
                 ->where('recorded_time', '<=', $startDate . ' 23:59:59')
                 ->select('reading', 'recorded_time')
                 ->orderBy('recorded_time', 'desc')
-                ->limit(1000)
                 ->get();
 
             $currentReading = $readings->first(function($reading) use ($startDate) {
@@ -291,7 +290,6 @@ class ReadingController extends Controller
                 ->where('recorded_time', '<=', $endDate . ' 23:59:59')
                 ->select('reading', 'recorded_time')
                 ->orderBy('recorded_time', 'desc')
-                ->limit(2000)
                 ->get();
 
             $currentReading = $readings->first(function($reading) use ($startDate, $endDate) {
